@@ -79,6 +79,7 @@ public final class StackTraceElement implements java.io.Serializable {
      * @serial The declaring class.
      */
     private String declaringClass;
+    private String decoratingContext;
     /**
      * @serial The method name.
      */
@@ -395,6 +396,10 @@ public final class StackTraceElement implements java.io.Serializable {
         }
         sb.append(')');
 
+        if (decoratingContext != null) {
+            sb.append(" [").append(decoratingContext).append(']');
+        }
+
         return sb.toString();
     }
 
@@ -561,6 +566,15 @@ public final class StackTraceElement implements java.io.Serializable {
 
         // VM to fill in StackTraceElement
         initStackTraceElements(stackTrace, x, depth);
+
+        // Apply decorating context if set on the current thread
+        String context = Thread.currentDecoratingContext();
+        if (context != null) {
+            for (StackTraceElement ste : stackTrace) {
+                ste.decoratingContext = context;
+            }
+        }
+
         return finishInit(stackTrace);
     }
 

@@ -270,6 +270,9 @@ public class Thread implements Runnable {
     // thread name
     private volatile String name;
 
+    // decorating context prepended to stack trace class names
+    private String decoratingContext;
+
     // interrupted status (read/written by VM)
     volatile boolean interrupted;
 
@@ -1798,6 +1801,23 @@ public class Thread implements Runnable {
         if (!isVirtual() && Thread.currentThread() == this) {
             setNativeName(name);
         }
+    }
+
+    /**
+     * Sets a decorating context string that will be prepended to class names
+     * in stack traces materialized on this thread.
+     *
+     * @param context the context string, or {@code null} to clear
+     */
+    public void setDecoratingContext(String context) {
+        this.decoratingContext = context;
+    }
+
+    /**
+     * Returns the decorating context of the current thread, or {@code null}.
+     */
+    static String currentDecoratingContext() {
+        return currentThread().decoratingContext;
     }
 
     /**
