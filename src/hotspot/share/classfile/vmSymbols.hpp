@@ -71,6 +71,7 @@ class SerializeClosure;
   template(java_lang_BoundVirtualThread,              "java/lang/ThreadBuilders$BoundVirtualThread") \
   template(java_lang_Cloneable,                       "java/lang/Cloneable")                      \
   template(java_lang_Throwable,                       "java/lang/Throwable")                      \
+  template(java_lang_StackTraceDecoratingContext,     "java/lang/StackTraceDecoratingContext")     \
   template(java_lang_ClassLoader,                     "java/lang/ClassLoader")                    \
   template(java_lang_Runnable,                        "java/lang/Runnable")                       \
   template(jdk_internal_vm_ContinuationScope,         "jdk/internal/vm/ContinuationScope")        \
@@ -570,6 +571,7 @@ class SerializeClosure;
   template(string_void_signature,                     "(Ljava/lang/String;)V")                    \
   template(string_bool_byte_array_signature,          "(Ljava/lang/String;Z)[B")                  \
   template(throwable_signature,                       "Ljava/lang/Throwable;")                    \
+  template(stacktrace_decorating_context_signature,   "Ljava/lang/StackTraceDecoratingContext;")   \
   template(throwable_void_signature,                  "(Ljava/lang/Throwable;)V")                 \
   template(void_throwable_signature,                  "()Ljava/lang/Throwable;")                  \
   template(class_void_signature,                      "(Ljava/lang/Class;)V")                     \

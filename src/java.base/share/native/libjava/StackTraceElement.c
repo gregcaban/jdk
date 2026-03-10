@@ -37,7 +37,7 @@ JNIEXPORT void JNICALL Java_java_lang_StackTraceElement_initStackTraceElement
 }
 
 JNIEXPORT void JNICALL Java_java_lang_StackTraceElement_initStackTraceElements
-  (JNIEnv *env, jobject dummy, jobjectArray elements, jobject backtrace, jint depth)
+  (JNIEnv *env, jobject dummy, jobjectArray elements, jobject backtrace, jint depth, jobject decoratingContext)
 {
-    JVM_InitStackTraceElementArray(env, elements, backtrace, depth);
+    JVM_InitStackTraceElementArray(env, elements, backtrace, depth, decoratingContext);
 }

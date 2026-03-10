@@ -398,6 +398,7 @@ class java_lang_Thread : AllStatic {
   static int _continuation_offset;
   static int _park_blocker_offset;
   static int _scopedValueBindings_offset;
+  static int _decoratingContext_offset;
   JFR_ONLY(static int _jfr_epoch_offset;)
 
   static void compute_offsets();
@@ -459,6 +460,10 @@ class java_lang_Thread : AllStatic {
 
   // Blocker object responsible for thread parking
   static oop park_blocker(oop java_thread);
+
+  // Decorating context for stack traces
+  static oop decoratingContext(oop java_thread);
+  static void set_decoratingContext(oop java_thread, oop value);
 
   // Write thread status info to threadStatus field of java.lang.Thread.
   static void set_thread_status(oop java_thread_oop, JavaThreadStatus status);
@@ -651,6 +656,7 @@ class java_lang_Throwable: AllStatic {
   static int _stackTrace_offset;
   static int _depth_offset;
   static int _cause_offset;
+  static int _decoratingContext_offset;
   static int _static_unassigned_stacktrace_offset;
 
   // StackTrace (programmatic access, new since 1.4)
@@ -673,6 +679,10 @@ class java_lang_Throwable: AllStatic {
 
   static oop cause(oop throwable);
 
+  // Decorating context for stack traces
+  static oop decoratingContext(oop throwable);
+  static void set_decoratingContext(oop throwable, oop value);
+
   static void print_stack_element(outputStream *st, Method* method, int bci);
 
   static void compute_offsets();
@@ -687,7 +697,7 @@ class java_lang_Throwable: AllStatic {
   static void fill_in_stack_trace(Handle throwable, const methodHandle& method = methodHandle());
 
   // Programmatic access to stack trace
-  static void get_stack_trace_elements(int depth, Handle backtrace, objArrayHandle stack_trace, TRAPS);
+  static void get_stack_trace_elements(int depth, Handle backtrace, oop decorating_ctx, objArrayHandle stack_trace, TRAPS);
 
   // For recreating class initialization error exceptions.
   static Handle create_initialization_error(JavaThread* current, Handle throwable);
@@ -1538,6 +1548,23 @@ class java_lang_System : AllStatic {
 
 // Interface to java.lang.StackTraceElement objects
 
+class java_lang_StackTraceDecoratingContext : AllStatic {
+ private:
+  static int _method_offset;    // java.lang.reflect.Method
+  static int _next_offset;      // StackTraceDecoratingContext
+
+ public:
+  static void compute_offsets();
+  static void serialize_offsets(SerializeClosure* f) NOT_CDS_RETURN;
+
+  static oop method(oop context);
+  static oop next(oop context);
+
+  // Debugging
+  friend class JavaClasses;
+};
+
+
 class java_lang_StackTraceElement: AllStatic {
  private:
   static int _declaringClassObject_offset;
@@ -1548,6 +1575,7 @@ class java_lang_StackTraceElement: AllStatic {
   static int _methodName_offset;
   static int _fileName_offset;
   static int _lineNumber_offset;
+  static int _decoratingContext_offset;
 
   // Setters
   static void set_classLoaderName(oop element, oop value);
@@ -1570,6 +1598,8 @@ class java_lang_StackTraceElement: AllStatic {
   static void fill_in(Handle element, InstanceKlass* holder, const methodHandle& method,
                       int version, int bci, Symbol* name, TRAPS);
 
+  static void set_decoratingContext(oop element, oop value);
+
   static void compute_offsets();
   static void serialize_offsets(SerializeClosure* f) NOT_CDS_RETURN;
 
@@ -1580,6 +1610,13 @@ class java_lang_StackTraceElement: AllStatic {
   // Debugging
   friend class JavaClasses;
 };
+
+// Shared helper for matching decorating context against stack frames.
+// Used by both the Throwable path (javaClasses.cpp) and the
+// synchronous Thread.getStackTrace() path (threadService.cpp).
+// Updates ctx_h in place (advances to next node on match).
+void match_decorating_context(Handle& ctx_h, Method* frame_method,
+                              Handle stack_trace_element, Thread* thread);
 
 
 class Backtrace: AllStatic {

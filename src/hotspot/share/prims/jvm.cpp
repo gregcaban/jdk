@@ -539,12 +539,13 @@ JVM_END
 // java.lang.StackTraceElement //////////////////////////////////////////////
 
 
-JVM_ENTRY(void, JVM_InitStackTraceElementArray(JNIEnv *env, jobjectArray elements, jobject backtrace, jint depth))
+JVM_ENTRY(void, JVM_InitStackTraceElementArray(JNIEnv *env, jobjectArray elements, jobject backtrace, jint depth, jobject decoratingContext))
   Handle backtraceh(THREAD, JNIHandles::resolve(backtrace));
   objArrayOop st = objArrayOop(JNIHandles::resolve(elements));
   objArrayHandle stack_trace(THREAD, st);
+  oop decorating_ctx = JNIHandles::resolve(decoratingContext);
   // Fill in the allocated stack trace
-  java_lang_Throwable::get_stack_trace_elements(depth, backtraceh, stack_trace, CHECK);
+  java_lang_Throwable::get_stack_trace_elements(depth, backtraceh, decorating_ctx, stack_trace, CHECK);
 JVM_END
 
 

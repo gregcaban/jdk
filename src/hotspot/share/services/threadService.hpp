@@ -276,6 +276,7 @@ class ThreadStackTrace : public CHeapObj<mtInternal> {
   bool                            _with_locked_monitors;
   GrowableArray<StackFrameInfo*>* _frames;
   GrowableArray<OopHandle>*       _jni_locked_monitors;
+  oop                             _decoratingContext;  // head of context list (read-only, no transfer)
 
  public:
 
@@ -285,6 +286,7 @@ class ThreadStackTrace : public CHeapObj<mtInternal> {
   JavaThread*     thread()              { return _thread; }
   StackFrameInfo* stack_frame_at(int i) { return _frames->at(i); }
   int             get_stack_depth()     { return _depth; }
+  oop             decoratingContext() const { return _decoratingContext; }
 
   void            add_stack_frame(javaVFrame* jvf);
   void            dump_stack_at_safepoint(int max_depth, ObjectMonitorsView* monitors, bool full);

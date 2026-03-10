@@ -79,7 +79,7 @@ public final class StackTraceElement implements java.io.Serializable {
      * @serial The declaring class.
      */
     private String declaringClass;
-    private String decoratingContext;
+    private transient StackTraceDecoratingContext decoratingContext;
     /**
      * @serial The method name.
      */
@@ -397,7 +397,18 @@ public final class StackTraceElement implements java.io.Serializable {
         sb.append(')');
 
         if (decoratingContext != null) {
-            sb.append(" [").append(decoratingContext).append(']');
+            StackTraceDecoratingContextRenderer renderer =
+                    Thread.getStackTraceDecoratingContextRenderer();
+            if (renderer != null) {
+                try {
+                    String rendered = renderer.render(decoratingContext.metadata());
+                    if (rendered != null) {
+                        sb.append(" [").append(rendered).append(']');
+                    }
+                } catch (Exception ignored) {
+                    // Don't let a broken renderer crash stack trace printing
+                }
+            }
         }
 
         return sb.toString();
@@ -558,22 +569,15 @@ public final class StackTraceElement implements java.io.Serializable {
      * Returns an array of StackTraceElements of the given depth
      * filled from the given backtrace.
      */
-    static StackTraceElement[] of(Object x, int depth) {
+    static StackTraceElement[] of(Object x, int depth,
+                                   StackTraceDecoratingContext ctx) {
         StackTraceElement[] stackTrace = new StackTraceElement[depth];
         for (int i = 0; i < depth; i++) {
             stackTrace[i] = new StackTraceElement();
         }
 
-        // VM to fill in StackTraceElement
-        initStackTraceElements(stackTrace, x, depth);
-
-        // Apply decorating context if set on the current thread
-        String context = Thread.currentDecoratingContext();
-        if (context != null) {
-            for (StackTraceElement ste : stackTrace) {
-                ste.decoratingContext = context;
-            }
-        }
+        // VM fills in fields AND applies decorating context matching
+        initStackTraceElements(stackTrace, x, depth, ctx);
 
         return finishInit(stackTrace);
     }
@@ -602,7 +606,8 @@ public final class StackTraceElement implements java.io.Serializable {
      * of the given Throwable.
      */
     private static native void initStackTraceElements(StackTraceElement[] elements,
-                                                      Object x, int depth);
+                                                      Object x, int depth,
+                                                      StackTraceDecoratingContext decoratingContext);
     /*
      * Sets the given stack trace element with the given StackFrameInfo
      */

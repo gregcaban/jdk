@@ -270,8 +270,16 @@ public class Thread implements Runnable {
     // thread name
     private volatile String name;
 
-    // decorating context prepended to stack trace class names
-    private String decoratingContext;
+    // linked list of decorating contexts for stack trace frames
+    private StackTraceDecoratingContext decoratingContext;
+
+    /**
+     * JVM-global renderer for stack trace decorating context metadata.
+     * Set once at startup (e.g., by an OTEL agent). If null, decoration
+     * is suppressed in toString() even if metadata is captured.
+     */
+    private static volatile StackTraceDecoratingContextRenderer
+            decoratingContextRenderer;
 
     // interrupted status (read/written by VM)
     volatile boolean interrupted;
@@ -1804,20 +1812,58 @@ public class Thread implements Runnable {
     }
 
     /**
-     * Sets a decorating context string that will be prepended to class names
-     * in stack traces materialized on this thread.
+     * Pushes a decorating context onto this thread's context stack.
+     * The context will be associated with matching stack frames when
+     * exceptions are thrown.
      *
-     * @param context the context string, or {@code null} to clear
+     * @param ctx the context to push
      */
-    public void setDecoratingContext(String context) {
-        this.decoratingContext = context;
+    public void pushDecoratingContext(StackTraceDecoratingContext ctx) {
+        ctx.next = this.decoratingContext;
+        this.decoratingContext = ctx;
     }
 
     /**
-     * Returns the decorating context of the current thread, or {@code null}.
+     * Returns this thread's current decorating context list head,
+     * or null if none.
+     *
+     * @return the head of the context list, or {@code null}
      */
-    static String currentDecoratingContext() {
-        return currentThread().decoratingContext;
+    public StackTraceDecoratingContext getDecoratingContext() {
+        return this.decoratingContext;
+    }
+
+    /**
+     * Takes the decorating context list from this thread,
+     * leaving the thread's context as null.
+     *
+     * @return the head of the context list, or {@code null}
+     */
+    public StackTraceDecoratingContext takeDecoratingContext() {
+        StackTraceDecoratingContext head = this.decoratingContext;
+        this.decoratingContext = null;
+        return head;
+    }
+
+    /**
+     * Sets the JVM-global renderer for stack trace decorating context.
+     * Typically called once at startup by an observability agent.
+     *
+     * @param renderer the renderer to use, or {@code null} to disable
+     */
+    public static void setStackTraceDecoratingContextRenderer(
+            StackTraceDecoratingContextRenderer renderer) {
+        decoratingContextRenderer = renderer;
+    }
+
+    /**
+     * Returns the JVM-global renderer, or null if not set.
+     *
+     * @return the renderer, or {@code null}
+     */
+    public static StackTraceDecoratingContextRenderer
+            getStackTraceDecoratingContextRenderer() {
+        return decoratingContextRenderer;
     }
 
     /**

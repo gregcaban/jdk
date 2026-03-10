@@ -129,6 +129,12 @@ public class Throwable implements Serializable {
     private transient Object backtrace;
 
     /**
+     * The decorating context list captured at the time the stack trace
+     * was filled in. Transferred from the throwing thread by the VM.
+     */
+    private transient StackTraceDecoratingContext decoratingContext;
+
+    /**
      * Specific details about the Throwable.  For example, for
      * {@code FileNotFoundException}, this contains the name of
      * the file that could not be found.
@@ -863,7 +869,7 @@ public class Throwable implements Serializable {
         // backtrace if this is the first call to this method
         if (stackTrace == UNASSIGNED_STACK || stackTrace == null) {
             if (backtrace != null) { /* Out of protocol state */
-                stackTrace = StackTraceElement.of(backtrace, depth);
+                stackTrace = StackTraceElement.of(backtrace, depth, decoratingContext);
             } else {
                 // no backtrace, fillInStackTrace overridden or not called
                 return UNASSIGNED_STACK;

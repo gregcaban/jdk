@@ -150,6 +150,7 @@
   do_klass(ArrayList_klass,                             java_util_ArrayList                                   ) \
                                                                                                                 \
   do_klass(StackTraceElement_klass,                     java_lang_StackTraceElement                           ) \
+  do_klass(StackTraceDecoratingContext_klass,           java_lang_StackTraceDecoratingContext                 ) \
                                                                                                                 \
   do_klass(nio_Buffer_klass,                            java_nio_Buffer                                       ) \
                                                                                                                 \

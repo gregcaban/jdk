@@ -1,42 +1,365 @@
 /*
  * @test
- * @summary Test Thread.setDecoratingContext decorates stack trace class names
+ * @summary Test rich stack trace decorating context
  * @run main DecoratingContextTest
  */
+
+import java.lang.reflect.Method;
+import java.util.Map;
+
 public class DecoratingContextTest {
-    public static void main(String[] args) {
-        // Test with decorating context set
-        Thread.currentThread().setDecoratingContext("POST /api/orders");
-        try {
-            throwException();
-        } catch (Exception e) {
-            StackTraceElement[] trace = e.getStackTrace();
-            for (StackTraceElement ste : trace) {
-                if (!ste.getClassName().startsWith("POST /api/orders/")) {
-                    throw new AssertionError(
-                        "Expected prefix 'POST /api/orders/' but got: " + ste.getClassName());
-                }
-            }
-        }
 
-        // Test with decorating context cleared
-        Thread.currentThread().setDecoratingContext(null);
-        try {
-            throwException();
-        } catch (Exception e) {
-            StackTraceElement[] trace = e.getStackTrace();
-            for (StackTraceElement ste : trace) {
-                if (ste.getClassName().contains("/")) {
-                    throw new AssertionError(
-                        "Expected no prefix but got: " + ste.getClassName());
-                }
+    // ---- setup: register global renderer ----
+    static {
+        Thread.setStackTraceDecoratingContextRenderer(metadata -> {
+            if (metadata instanceof String s) return s;
+            if (metadata instanceof Map<?,?> m) {
+                StringBuilder sb = new StringBuilder();
+                m.forEach((k, v) -> {
+                    if (sb.length() > 0) sb.append(' ');
+                    sb.append(k).append('=').append(v);
+                });
+                return sb.toString();
             }
-        }
-
-        System.out.println("All assertions passed.");
+            return String.valueOf(metadata);
+        });
     }
 
-    private static void throwException() throws Exception {
+    // ---- helper methods that will appear on the stack ----
+
+    static void methodA() throws Exception {
+        methodB();
+    }
+
+    static void methodB() throws Exception {
+        methodC();
+    }
+
+    static void methodC() throws Exception {
         throw new Exception("test");
+    }
+
+    static void recursiveMethod(int depth) throws Exception {
+        if (depth == 0) throw new Exception("recursive");
+        recursiveMethod(depth - 1);
+    }
+
+    // ---- tests ----
+
+    public static void main(String[] args) throws Exception {
+        testBasicPushAndCapture();
+        testMultipleContexts();
+        testNoMatch();
+        testOwnershipTransfer();
+        testNoContext();
+        testOtelStyleMetadata();
+        testRecursion();
+        testNestedTryCatch();
+        testNoRenderer();
+
+        System.out.println("All tests passed.");
+    }
+
+    /**
+     * Test 1: Push one context, throw, verify matching frame is decorated.
+     */
+    static void testBasicPushAndCapture() throws Exception {
+        Method m = DecoratingContextTest.class
+                .getDeclaredMethod("methodC");
+        Thread.currentThread().pushDecoratingContext(
+                new StackTraceDecoratingContext(m, "POST /api/orders"));
+
+        try {
+            methodA();
+            throw new AssertionError("Should have thrown");
+        } catch (Exception e) {
+            StackTraceElement[] trace = e.getStackTrace();
+            boolean found = false;
+            for (StackTraceElement ste : trace) {
+                String s = ste.toString();
+                if (ste.getMethodName().equals("methodC")) {
+                    assertContains(s, "[POST /api/orders]",
+                            "methodC frame should be decorated");
+                    found = true;
+                } else {
+                    assertNotContains(s, "[",
+                            "non-matching frame should not be decorated: " + s);
+                }
+            }
+            assertTrue(found, "methodC frame not found in trace");
+        }
+    }
+
+    /**
+     * Test 2: Push contexts for two different methods, verify both
+     * decorated. Head = most recently pushed = matches shallowest.
+     */
+    static void testMultipleContexts() throws Exception {
+        Method mA = DecoratingContextTest.class
+                .getDeclaredMethod("methodA");
+        Method mC = DecoratingContextTest.class
+                .getDeclaredMethod("methodC");
+
+        // Push A first, then C. Head is C.
+        // Frame walk: methodC (shallowest), methodB, methodA (deepest)
+        // C matches methodC first, then A matches methodA.
+        Thread.currentThread().pushDecoratingContext(
+                new StackTraceDecoratingContext(mA, "span-A"));
+        Thread.currentThread().pushDecoratingContext(
+                new StackTraceDecoratingContext(mC, "span-C"));
+
+        try {
+            methodA();
+            throw new AssertionError("Should have thrown");
+        } catch (Exception e) {
+            StackTraceElement[] trace = e.getStackTrace();
+            boolean foundA = false, foundC = false;
+            for (StackTraceElement ste : trace) {
+                if (ste.getMethodName().equals("methodA")) {
+                    assertContains(ste.toString(), "[span-A]",
+                            "methodA should have span-A");
+                    foundA = true;
+                }
+                if (ste.getMethodName().equals("methodC")) {
+                    assertContains(ste.toString(), "[span-C]",
+                            "methodC should have span-C");
+                    foundC = true;
+                }
+            }
+            assertTrue(foundA && foundC, "Both frames should be found");
+        }
+    }
+
+    /**
+     * Test 3: Push context for a method not on the stack.
+     * All frames should be undecorated.
+     */
+    static void testNoMatch() throws Exception {
+        Method m = DecoratingContextTest.class
+                .getDeclaredMethod("recursiveMethod", int.class);
+        Thread.currentThread().pushDecoratingContext(
+                new StackTraceDecoratingContext(m, "should-not-appear"));
+
+        try {
+            methodA(); // recursiveMethod is NOT called
+            throw new AssertionError("Should have thrown");
+        } catch (Exception e) {
+            for (StackTraceElement ste : e.getStackTrace()) {
+                assertNotContains(ste.toString(), "[",
+                        "No frame should be decorated: " + ste);
+            }
+        }
+    }
+
+    /**
+     * Test 4: After exception, Thread's context list should be null.
+     */
+    static void testOwnershipTransfer() throws Exception {
+        Method m = DecoratingContextTest.class
+                .getDeclaredMethod("methodC");
+        Thread.currentThread().pushDecoratingContext(
+                new StackTraceDecoratingContext(m, "transfer-test"));
+
+        try {
+            methodA();
+        } catch (Exception e) {
+            // Context was transferred to the exception
+        }
+
+        // Thread should have no context now
+        StackTraceDecoratingContext remaining =
+                Thread.currentThread().getDecoratingContext();
+        assertTrue(remaining == null,
+                "Thread context should be null after exception");
+    }
+
+    /**
+     * Test 5: Normal exception without any context push.
+     * Should behave exactly as before.
+     */
+    static void testNoContext() throws Exception {
+        // Ensure thread has no context
+        Thread.currentThread().takeDecoratingContext();
+
+        try {
+            methodA();
+        } catch (Exception e) {
+            for (StackTraceElement ste : e.getStackTrace()) {
+                assertNotContains(ste.toString(), "[",
+                        "No decoration expected: " + ste);
+            }
+        }
+    }
+
+    /**
+     * Test 6: OTEL-style map metadata rendered correctly.
+     */
+    static void testOtelStyleMetadata() throws Exception {
+        Method m = DecoratingContextTest.class
+                .getDeclaredMethod("methodC");
+        Map<String, String> otelData = Map.of(
+                "traceId", "abc123",
+                "spanId", "def456"
+        );
+        Thread.currentThread().pushDecoratingContext(
+                new StackTraceDecoratingContext(m, otelData));
+
+        try {
+            methodA();
+        } catch (Exception e) {
+            StackTraceElement[] trace = e.getStackTrace();
+            for (StackTraceElement ste : trace) {
+                if (ste.getMethodName().equals("methodC")) {
+                    String s = ste.toString();
+                    assertContains(s, "traceId=abc123",
+                            "Should contain traceId");
+                    assertContains(s, "spanId=def456",
+                            "Should contain spanId");
+                    return;
+                }
+            }
+            throw new AssertionError("methodC not found");
+        }
+    }
+
+    /**
+     * Test 7: Recursive method -- one context, multiple frames with
+     * same method. Head matches shallowest (first encountered during
+     * top-down frame walk).
+     */
+    static void testRecursion() throws Exception {
+        Method m = DecoratingContextTest.class
+                .getDeclaredMethod("recursiveMethod", int.class);
+        Thread.currentThread().pushDecoratingContext(
+                new StackTraceDecoratingContext(m, "matched"));
+
+        try {
+            recursiveMethod(3);
+        } catch (Exception e) {
+            StackTraceElement[] trace = e.getStackTrace();
+            int decoratedCount = 0;
+            int decoratedIndex = -1;
+            for (int i = 0; i < trace.length; i++) {
+                if (trace[i].getMethodName().equals("recursiveMethod")
+                        && trace[i].toString().contains("[matched]")) {
+                    decoratedCount++;
+                    decoratedIndex = i;
+                }
+            }
+            assertTrue(decoratedCount == 1,
+                    "Exactly one frame should be decorated, got: "
+                    + decoratedCount);
+            // Should be the shallowest (lowest index) recursiveMethod frame
+            for (int i = 0; i < trace.length; i++) {
+                if (trace[i].getMethodName().equals("recursiveMethod")) {
+                    assertTrue(i == decoratedIndex,
+                            "Shallowest recursiveMethod frame should be "
+                            + "decorated");
+                    break;
+                }
+            }
+        }
+    }
+
+    /**
+     * Test 8: Nested try-catch -- inner exception gets first list,
+     * outer exception gets fresh list.
+     */
+    static void testNestedTryCatch() throws Exception {
+        Method mC = DecoratingContextTest.class
+                .getDeclaredMethod("methodC");
+        Thread.currentThread().pushDecoratingContext(
+                new StackTraceDecoratingContext(mC, "inner-span"));
+
+        Exception inner = null;
+        try {
+            methodA(); // throws, transfers context to exception
+        } catch (Exception e) {
+            inner = e;
+        }
+
+        // Thread context should be null now -- push new for outer
+        Method mA = DecoratingContextTest.class
+                .getDeclaredMethod("methodA");
+        Thread.currentThread().pushDecoratingContext(
+                new StackTraceDecoratingContext(mA, "outer-span"));
+
+        Exception outer = null;
+        try {
+            methodA();
+        } catch (Exception e) {
+            outer = e;
+        }
+
+        // inner should have "inner-span" on methodC
+        boolean foundInner = false;
+        for (StackTraceElement ste : inner.getStackTrace()) {
+            if (ste.getMethodName().equals("methodC")) {
+                assertContains(ste.toString(), "[inner-span]",
+                        "Inner exception's methodC should have inner-span");
+                foundInner = true;
+            }
+        }
+        assertTrue(foundInner, "methodC not found in inner trace");
+
+        // outer should have "outer-span" on methodA
+        boolean foundOuter = false;
+        for (StackTraceElement ste : outer.getStackTrace()) {
+            if (ste.getMethodName().equals("methodA")) {
+                assertContains(ste.toString(), "[outer-span]",
+                        "Outer exception's methodA should have outer-span");
+                foundOuter = true;
+            }
+        }
+        assertTrue(foundOuter, "methodA not found in outer trace");
+    }
+
+    /**
+     * Test 9: With no renderer set, metadata is captured but
+     * toString() does not render it.
+     */
+    static void testNoRenderer() throws Exception {
+        // Save and clear renderer
+        var saved = Thread.getStackTraceDecoratingContextRenderer();
+        Thread.setStackTraceDecoratingContextRenderer(null);
+
+        try {
+            Method m = DecoratingContextTest.class
+                    .getDeclaredMethod("methodC");
+            Thread.currentThread().pushDecoratingContext(
+                    new StackTraceDecoratingContext(m, "invisible"));
+
+            try {
+                methodA();
+            } catch (Exception e) {
+                for (StackTraceElement ste : e.getStackTrace()) {
+                    assertNotContains(ste.toString(), "[",
+                            "No rendering without renderer: " + ste);
+                }
+            }
+        } finally {
+            // Restore renderer
+            Thread.setStackTraceDecoratingContextRenderer(saved);
+        }
+    }
+
+    // ---- assertion helpers ----
+
+    static void assertTrue(boolean cond, String msg) {
+        if (!cond) throw new AssertionError(msg);
+    }
+
+    static void assertContains(String haystack, String needle, String msg) {
+        if (!haystack.contains(needle)) {
+            throw new AssertionError(msg + "\n  expected to contain: "
+                    + needle + "\n  actual: " + haystack);
+        }
+    }
+
+    static void assertNotContains(String haystack, String needle,
+                                   String msg) {
+        if (haystack.contains(needle)) {
+            throw new AssertionError(msg);
+        }
     }
 }

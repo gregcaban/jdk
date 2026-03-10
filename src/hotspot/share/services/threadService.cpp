@@ -657,6 +657,7 @@ ThreadStackTrace::ThreadStackTrace(JavaThread* t, bool with_locked_monitors) {
   _frames = new (mtServiceability) GrowableArray<StackFrameInfo*>(INITIAL_ARRAY_SIZE, mtServiceability);
   _depth = 0;
   _with_locked_monitors = with_locked_monitors;
+  _decoratingContext = nullptr;
   if (_with_locked_monitors) {
     _jni_locked_monitors = new (mtServiceability) GrowableArray<OopHandle>(INITIAL_ARRAY_SIZE, mtServiceability);
   } else {
@@ -683,6 +684,12 @@ ThreadStackTrace::~ThreadStackTrace() {
 
 void ThreadStackTrace::dump_stack_at_safepoint(int maxDepth, ObjectMonitorsView* monitors, bool full) {
   assert(SafepointSynchronize::is_at_safepoint(), "all threads are stopped");
+
+  // Read target thread's decorating context (safe — at safepoint)
+  oop java_thread = _thread->threadObj();
+  _decoratingContext = (java_thread != nullptr)
+      ? java_lang_Thread::decoratingContext(java_thread)
+      : nullptr;
 
   if (_thread->has_last_Java_frame()) {
     RegisterMap reg_map(_thread,
@@ -750,11 +757,18 @@ Handle ThreadStackTrace::allocate_fill_stack_trace_element_array(TRAPS) {
   // Allocate an array of java/lang/StackTraceElement object
   objArrayOop ste = oopFactory::new_objArray(ik, _depth, CHECK_NH);
   objArrayHandle backtrace(THREAD, ste);
+
+  Handle ctx_h(THREAD, _decoratingContext);
+
   for (int j = 0; j < _depth; j++) {
     StackFrameInfo* frame = _frames->at(j);
     methodHandle mh(THREAD, frame->method());
     oop element = java_lang_StackTraceElement::create(mh, frame->bci(), CHECK_NH);
     backtrace->obj_at_put(j, element);
+
+    // Match decorating context against this frame
+    Handle element_h(THREAD, element);
+    match_decorating_context(ctx_h, frame->method(), element_h, THREAD);
   }
   return backtrace;
 }

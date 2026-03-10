@@ -1696,6 +1696,7 @@ int java_lang_Thread::_tid_offset;
 int java_lang_Thread::_continuation_offset;
 int java_lang_Thread::_park_blocker_offset;
 int java_lang_Thread::_scopedValueBindings_offset;
+int java_lang_Thread::_decoratingContext_offset;
 JFR_ONLY(int java_lang_Thread::_jfr_epoch_offset;)
 
 #define THREAD_FIELDS_DO(macro) \
@@ -1708,7 +1709,8 @@ JFR_ONLY(int java_lang_Thread::_jfr_epoch_offset;)
   macro(_tid_offset,           k, "tid", long_signature, false); \
   macro(_park_blocker_offset,  k, "parkBlocker", object_signature, false); \
   macro(_continuation_offset,  k, "cont", continuation_signature, false); \
-  macro(_scopedValueBindings_offset, k, "scopedValueBindings", object_signature, false);
+  macro(_scopedValueBindings_offset, k, "scopedValueBindings", object_signature, false); \
+  macro(_decoratingContext_offset,   k, "decoratingContext",   stacktrace_decorating_context_signature, false);
 
 void java_lang_Thread::compute_offsets() {
   assert(_holder_offset == 0, "offsets should be initialized only once");
@@ -1906,6 +1908,14 @@ ByteSize java_lang_Thread::thread_id_offset() {
 
 oop java_lang_Thread::park_blocker(oop java_thread) {
   return java_thread->obj_field_access<MO_RELAXED>(_park_blocker_offset);
+}
+
+oop java_lang_Thread::decoratingContext(oop java_thread) {
+  return java_thread->obj_field(_decoratingContext_offset);
+}
+
+void java_lang_Thread::set_decoratingContext(oop java_thread, oop value) {
+  java_thread->obj_field_put(_decoratingContext_offset, value);
 }
 
 // Obtain stack trace for a platform or virtual thread.
@@ -2254,6 +2264,7 @@ int java_lang_Throwable::_detailMessage_offset;
 int java_lang_Throwable::_stackTrace_offset;
 int java_lang_Throwable::_depth_offset;
 int java_lang_Throwable::_cause_offset;
+int java_lang_Throwable::_decoratingContext_offset;
 int java_lang_Throwable::_static_unassigned_stacktrace_offset;
 
 #define THROWABLE_FIELDS_DO(macro) \
@@ -2262,6 +2273,7 @@ int java_lang_Throwable::_static_unassigned_stacktrace_offset;
   macro(_stackTrace_offset,    k, "stackTrace",    java_lang_StackTraceElement_array, false); \
   macro(_depth_offset,         k, "depth",         int_signature,                     false); \
   macro(_cause_offset,         k, "cause",         throwable_signature,               false); \
+  macro(_decoratingContext_offset, k, "decoratingContext", stacktrace_decorating_context_signature, false); \
   macro(_static_unassigned_stacktrace_offset, k, "UNASSIGNED_STACK", java_lang_StackTraceElement_array, true)
 
 void java_lang_Throwable::compute_offsets() {
@@ -2313,6 +2325,14 @@ const char* java_lang_Throwable::message_as_utf8(oop throwable) {
 
 oop java_lang_Throwable::cause(oop throwable) {
   return throwable->obj_field(_cause_offset);
+}
+
+oop java_lang_Throwable::decoratingContext(oop throwable) {
+  return throwable->obj_field(_decoratingContext_offset);
+}
+
+void java_lang_Throwable::set_decoratingContext(oop throwable, oop value) {
+  throwable->obj_field_put(_decoratingContext_offset, value);
 }
 
 void java_lang_Throwable::set_message(oop throwable, oop value) {
@@ -2861,6 +2881,17 @@ void java_lang_Throwable::fill_in_stack_trace(Handle throwable, const methodHand
   // Put completed stack trace into throwable object
   set_backtrace(throwable(), bt.backtrace());
   set_depth(throwable(), total_count);
+
+  // Transfer decorating context from Thread to Throwable
+  JavaThread* current = JavaThread::current();
+  oop java_thread = current->threadObj();
+  if (java_thread != nullptr) {
+    oop ctx = java_lang_Thread::decoratingContext(java_thread);
+    if (ctx != nullptr) {
+      set_decoratingContext(throwable(), ctx);
+      java_lang_Thread::set_decoratingContext(java_thread, nullptr);
+    }
+  }
 }
 
 void java_lang_Throwable::fill_in_stack_trace(Handle throwable, const methodHandle& method) {
@@ -2931,7 +2962,37 @@ void java_lang_Throwable::fill_in_stack_trace_of_preallocated_backtrace(Handle t
   assert(java_lang_Throwable::unassigned_stacktrace() != nullptr, "not initialized");
 }
 
+/**
+ * Walk the decorating context linked list and match against a
+ * frame's method. If the current context's Method* matches the
+ * frame's Method*, set the decoratingContext field on the
+ * StackTraceElement and advance to the next context node.
+ *
+ * ctx_h is a Handle so the context oop survives GC during fill_in.
+ * Updates ctx_h in place and returns.
+ */
+void match_decorating_context(Handle& ctx_h, Method* frame_method,
+                              Handle stack_trace_element, Thread* thread) {
+  if (ctx_h.is_null()) return;
+
+  oop ctx = ctx_h();
+  // Resolve Method* from the context's java.lang.reflect.Method
+  oop reflect_method = java_lang_StackTraceDecoratingContext::method(ctx);
+  oop mirror = java_lang_reflect_Method::clazz(reflect_method);
+  int slot = java_lang_reflect_Method::slot(reflect_method);
+  InstanceKlass* ik = java_lang_Class::as_InstanceKlass(mirror);
+  Method* ctx_method = ik->method_with_idnum(slot);
+
+  if (ctx_method == frame_method) {
+    java_lang_StackTraceElement::set_decoratingContext(
+        stack_trace_element(), ctx);
+    ctx_h = Handle(thread, java_lang_StackTraceDecoratingContext::next(ctx));
+  }
+  // else ctx_h stays unchanged
+}
+
 void java_lang_Throwable::get_stack_trace_elements(int depth, Handle backtrace,
+                                                   oop decorating_ctx,
                                                    objArrayHandle stack_trace_array_h, TRAPS) {
 
   if (backtrace.is_null() || stack_trace_array_h.is_null()) {
@@ -2946,6 +3007,8 @@ void java_lang_Throwable::get_stack_trace_elements(int depth, Handle backtrace,
 
   objArrayHandle result(THREAD, objArrayOop(backtrace()));
   BacktraceIterator iter(result, THREAD);
+
+  Handle ctx_h(THREAD, decorating_ctx);
 
   int index = 0;
   while (iter.repeat()) {
@@ -2966,6 +3029,9 @@ void java_lang_Throwable::get_stack_trace_elements(int depth, Handle backtrace,
                                          bte._bci,
                                          bte._name,
                                          CHECK);
+
+    // Match decorating context against this frame
+    match_decorating_context(ctx_h, method(), stack_trace_element, THREAD);
   }
 }
 
@@ -4918,12 +4984,43 @@ void jdk_internal_misc_UnsafeConstants::set_unsafe_constants() {
 
 int java_lang_StackTraceElement::_methodName_offset;
 int java_lang_StackTraceElement::_fileName_offset;
+// java_lang_StackTraceDecoratingContext
+
+int java_lang_StackTraceDecoratingContext::_method_offset;
+int java_lang_StackTraceDecoratingContext::_next_offset;
+
+#define STACKTRACEDECORATING_FIELDS_DO(macro) \
+  macro(_method_offset, k, "method", reflect_method_signature, false); \
+  macro(_next_offset,   k, "next",   stacktrace_decorating_context_signature, false)
+
+void java_lang_StackTraceDecoratingContext::compute_offsets() {
+  InstanceKlass* k = vmClasses::StackTraceDecoratingContext_klass();
+  STACKTRACEDECORATING_FIELDS_DO(FIELD_COMPUTE_OFFSET);
+}
+
+#if INCLUDE_CDS
+void java_lang_StackTraceDecoratingContext::serialize_offsets(SerializeClosure* f) {
+  STACKTRACEDECORATING_FIELDS_DO(FIELD_SERIALIZE_OFFSET);
+}
+#endif
+
+oop java_lang_StackTraceDecoratingContext::method(oop context) {
+  return context->obj_field(_method_offset);
+}
+
+oop java_lang_StackTraceDecoratingContext::next(oop context) {
+  return context->obj_field(_next_offset);
+}
+
+// java_lang_StackTraceElement
+
 int java_lang_StackTraceElement::_lineNumber_offset;
 int java_lang_StackTraceElement::_moduleName_offset;
 int java_lang_StackTraceElement::_moduleVersion_offset;
 int java_lang_StackTraceElement::_classLoaderName_offset;
 int java_lang_StackTraceElement::_declaringClass_offset;
 int java_lang_StackTraceElement::_declaringClassObject_offset;
+int java_lang_StackTraceElement::_decoratingContext_offset;
 
 #define STACKTRACEELEMENT_FIELDS_DO(macro) \
   macro(_declaringClassObject_offset,  k, "declaringClassObject", class_signature, false); \
@@ -4933,7 +5030,8 @@ int java_lang_StackTraceElement::_declaringClassObject_offset;
   macro(_declaringClass_offset,  k, "declaringClass",  string_signature, false); \
   macro(_methodName_offset,      k, "methodName",      string_signature, false); \
   macro(_fileName_offset,        k, "fileName",        string_signature, false); \
-  macro(_lineNumber_offset,      k, "lineNumber",      int_signature,    false)
+  macro(_lineNumber_offset,      k, "lineNumber",      int_signature,    false); \
+  macro(_decoratingContext_offset, k, "decoratingContext", stacktrace_decorating_context_signature, false)
 
 // Support for java_lang_StackTraceElement
 void java_lang_StackTraceElement::compute_offsets() {
@@ -4977,6 +5075,10 @@ void java_lang_StackTraceElement::set_classLoaderName(oop element, oop value) {
 
 void java_lang_StackTraceElement::set_declaringClassObject(oop element, oop value) {
   element->obj_field_put(_declaringClassObject_offset, value);
+}
+
+void java_lang_StackTraceElement::set_decoratingContext(oop element, oop value) {
+  element->obj_field_put(_decoratingContext_offset, value);
 }
 
 
@@ -5383,6 +5485,7 @@ void java_lang_InternalError::serialize_offsets(SerializeClosure* f) {
   f(java_lang_reflect_Parameter) \
   f(java_lang_Module) \
   f(java_lang_StackTraceElement) \
+  f(java_lang_StackTraceDecoratingContext) \
   f(java_lang_ClassFrameInfo) \
   f(java_lang_StackFrameInfo) \
   f(java_lang_LiveStackFrameInfo) \

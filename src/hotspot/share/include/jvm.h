@@ -234,7 +234,7 @@ JVM_FillInStackTrace(JNIEnv *env, jobject throwable);
  * java.lang.StackTraceElement
  */
 JNIEXPORT void JNICALL
-JVM_InitStackTraceElementArray(JNIEnv *env, jobjectArray elements, jobject backtrace, jint depth);
+JVM_InitStackTraceElementArray(JNIEnv *env, jobjectArray elements, jobject backtrace, jint depth, jobject decoratingContext);
 
 JNIEXPORT void JNICALL
 JVM_InitStackTraceElement(JNIEnv* env, jobject element, jobject stackFrameInfo);
