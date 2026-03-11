@@ -2882,9 +2882,12 @@ void java_lang_Throwable::fill_in_stack_trace(Handle throwable, const methodHand
   set_backtrace(throwable(), bt.backtrace());
   set_depth(throwable(), total_count);
 
-  // Transfer decorating context from Thread to Throwable
+  // Transfer decorating context from Thread to Throwable.
+  // Use vthread() — returns the mounted virtual thread if present,
+  // otherwise the platform thread. This is where Java code pushed
+  // the context via Thread.currentThread().pushDecoratingContext().
   JavaThread* current = JavaThread::current();
-  oop java_thread = current->threadObj();
+  oop java_thread = current->vthread();
   if (java_thread != nullptr) {
     oop ctx = java_lang_Thread::decoratingContext(java_thread);
     if (ctx != nullptr) {

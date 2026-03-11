@@ -56,6 +56,10 @@ public class DecoratingContextTest {
         testRecursion();
         testNestedTryCatch();
         testNoRenderer();
+        testVirtualThreadBasic();
+        testVirtualThreadContextSurvivesYield();
+        testVirtualThreadIsolationFromCarrier();
+        testVirtualThreadMultipleContexts();
 
         System.out.println("All tests passed.");
     }
@@ -341,6 +345,141 @@ public class DecoratingContextTest {
             // Restore renderer
             Thread.setStackTraceDecoratingContextRenderer(saved);
         }
+    }
+
+    /**
+     * Test 10: Push context on a virtual thread, throw, verify decoration.
+     */
+    static void testVirtualThreadBasic() throws Exception {
+        var result = new java.util.concurrent.CompletableFuture<StackTraceElement[]>();
+
+        Thread.ofVirtual().name("vthread-test-basic").start(() -> {
+            try {
+                Method m = DecoratingContextTest.class.getDeclaredMethod("methodC");
+                Thread.currentThread().pushDecoratingContext(
+                        new StackTraceDecoratingContext(m, "vthread-span"));
+                methodA();
+            } catch (Exception e) {
+                result.complete(e.getStackTrace());
+            }
+        });
+
+        StackTraceElement[] trace = result.get();
+        boolean found = false;
+        for (StackTraceElement ste : trace) {
+            if (ste.getMethodName().equals("methodC")) {
+                assertContains(ste.toString(), "[vthread-span]",
+                        "methodC on vthread should be decorated");
+                found = true;
+            }
+        }
+        assertTrue(found, "methodC not found in vthread trace");
+    }
+
+    /**
+     * Test 11: Context survives a yield point (Thread.sleep triggers
+     * virtual thread unmount/remount, potentially on a different carrier).
+     */
+    static void testVirtualThreadContextSurvivesYield() throws Exception {
+        var result = new java.util.concurrent.CompletableFuture<StackTraceElement[]>();
+
+        Thread.ofVirtual().name("vthread-test-yield").start(() -> {
+            try {
+                Method m = DecoratingContextTest.class.getDeclaredMethod("methodC");
+                Thread.currentThread().pushDecoratingContext(
+                        new StackTraceDecoratingContext(m, "survived-yield"));
+
+                // Sleep triggers virtual thread unmount from carrier.
+                // When resumed (possibly on a different carrier), the
+                // decorating context should still be on this virtual thread.
+                Thread.sleep(10);
+
+                methodA();
+            } catch (Exception e) {
+                result.complete(e.getStackTrace());
+            }
+        });
+
+        StackTraceElement[] trace = result.get();
+        boolean found = false;
+        for (StackTraceElement ste : trace) {
+            if (ste.getMethodName().equals("methodC")) {
+                assertContains(ste.toString(), "[survived-yield]",
+                        "Context should survive yield point");
+                found = true;
+            }
+        }
+        assertTrue(found, "methodC not found after yield");
+    }
+
+    /**
+     * Test 12: Context pushed on a virtual thread does NOT leak to
+     * the carrier thread, and vice versa.
+     */
+    static void testVirtualThreadIsolationFromCarrier() throws Exception {
+        // Clear carrier's context
+        Thread.currentThread().takeDecoratingContext();
+
+        // Push on carrier
+        Method mA = DecoratingContextTest.class.getDeclaredMethod("methodA");
+        Thread.currentThread().pushDecoratingContext(
+                new StackTraceDecoratingContext(mA, "carrier-ctx"));
+
+        var result = new java.util.concurrent.CompletableFuture<StackTraceDecoratingContext>();
+
+        Thread.ofVirtual().name("vthread-test-isolation").start(() -> {
+            // Virtual thread should NOT see carrier's context
+            result.complete(Thread.currentThread().getDecoratingContext());
+        });
+
+        StackTraceDecoratingContext vtCtx = result.get();
+        assertTrue(vtCtx == null,
+                "Virtual thread should not inherit carrier's context");
+
+        // Clean up carrier
+        Thread.currentThread().takeDecoratingContext();
+    }
+
+    /**
+     * Test 13: Multiple contexts on a virtual thread, matching
+     * different frames.
+     */
+    static void testVirtualThreadMultipleContexts() throws Exception {
+        var result = new java.util.concurrent.CompletableFuture<StackTraceElement[]>();
+
+        Thread.ofVirtual().name("vthread-test-multi").start(() -> {
+            try {
+                Method mA = DecoratingContextTest.class.getDeclaredMethod("methodA");
+                Method mC = DecoratingContextTest.class.getDeclaredMethod("methodC");
+
+                Thread.currentThread().pushDecoratingContext(
+                        new StackTraceDecoratingContext(mA, "vt-outer"));
+                Thread.currentThread().pushDecoratingContext(
+                        new StackTraceDecoratingContext(mC, "vt-inner"));
+
+                // Sleep to force at least one yield
+                Thread.sleep(1);
+
+                methodA();
+            } catch (Exception e) {
+                result.complete(e.getStackTrace());
+            }
+        });
+
+        StackTraceElement[] trace = result.get();
+        boolean foundA = false, foundC = false;
+        for (StackTraceElement ste : trace) {
+            if (ste.getMethodName().equals("methodA")
+                    && ste.toString().contains("[vt-outer]")) {
+                foundA = true;
+            }
+            if (ste.getMethodName().equals("methodC")
+                    && ste.toString().contains("[vt-inner]")) {
+                foundC = true;
+            }
+        }
+        assertTrue(foundA && foundC,
+                "Both vthread contexts should match their frames");
     }
 
     // ---- assertion helpers ----

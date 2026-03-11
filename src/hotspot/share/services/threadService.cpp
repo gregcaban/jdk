@@ -685,8 +685,9 @@ ThreadStackTrace::~ThreadStackTrace() {
 void ThreadStackTrace::dump_stack_at_safepoint(int maxDepth, ObjectMonitorsView* monitors, bool full) {
   assert(SafepointSynchronize::is_at_safepoint(), "all threads are stopped");
 
-  // Read target thread's decorating context (safe — at safepoint)
-  oop java_thread = _thread->threadObj();
+  // Read target thread's decorating context (safe — at safepoint).
+  // Use vthread() to get the virtual thread if mounted, else platform thread.
+  oop java_thread = _thread->vthread();
   _decoratingContext = (java_thread != nullptr)
       ? java_lang_Thread::decoratingContext(java_thread)
       : nullptr;
